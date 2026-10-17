@@ -19,6 +19,7 @@ Each person adds their own section. Do not edit other sections.
 
 ### CSV logging
 - A fall is logged once, on the transition from NORMAL to FALL_DETECTED, not on every message during the 5-second alert.
+- The device samples every 100 ms but publishes every 200 ms, so it reaches FALL_DETECTED before Python has seen 3 high readings. The row waits up to 1.5 s for Python's verdict before it is written: a held fall shows `FALL`, a brief flick shows `no`.
 - Each row in `events.csv`: time received, device state, Python check, vibration, motion, light.
 - The last 20 falls are also kept in memory for the dashboard table.
 

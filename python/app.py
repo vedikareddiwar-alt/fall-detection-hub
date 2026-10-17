@@ -13,6 +13,10 @@ PORT = 1883
 TOPIC = "fallhub/teamone/event"
 VIB_THRESHOLD = 3000
 CSV_FILE = "events.csv"
+# The device samples every 100 ms but publishes every 200 ms, so it reaches
+# FALL_DETECTED before Python has seen 3 high readings. A fall row waits up
+# to this long for the Python check before it is written.
+CONFIRM_WINDOW = 1.5
 
 lock = threading.Lock()
 latest = {}
@@ -20,6 +24,8 @@ events = []
 last_device_state = "NORMAL"
 py_consecutive = 0
 py_first_time = 0.0
+py_last_fall = 0.0
+pending = None
 
 app = Flask(__name__)
 
@@ -53,8 +59,16 @@ def on_connect(client, userdata, flags, rc):
     print("Subscribed to", TOPIC)
 
 
+def finalize_event(row, py_confirmed):
+    row["python_check"] = "FALL" if py_confirmed else "no"
+    events.insert(0, row)
+    del events[20:]
+    log_event(row)
+    print("FALL EVENT:", row)
+
+
 def on_message(client, userdata, msg):
-    global last_device_state
+    global last_device_state, py_last_fall, pending
     now = time.time()
     try:
         data = json.loads(msg.payload.decode())
@@ -65,6 +79,8 @@ def on_message(client, userdata, msg):
     vib = int(data.get("vib", 0))
     device_state = data.get("state", "NORMAL")
     py_fall = python_check(vib, now)
+    if py_fall:
+        py_last_fall = now
 
     with lock:
         latest.clear()
@@ -73,19 +89,24 @@ def on_message(client, userdata, msg):
         latest["python_check"] = "FALL" if py_fall else "NORMAL"
 
         if device_state == "FALL_DETECTED" and last_device_state != "FALL_DETECTED":
-            row = {
-                "received_at": datetime.now().isoformat(timespec="seconds"),
-                "device_state": device_state,
-                "python_check": "FALL" if py_fall else "no",
-                "vib": vib,
-                "pir": data.get("pir"),
-                "ldr": data.get("ldr"),
+            pending = {
+                "since": now,
+                "row": {
+                    "received_at": datetime.now().isoformat(timespec="seconds"),
+                    "device_state": device_state,
+                    "python_check": "",
+                    "vib": vib,
+                    "pir": data.get("pir"),
+                    "ldr": data.get("ldr"),
+                },
             }
-            events.insert(0, row)
-            del events[20:]
-            log_event(row)
-            print("FALL EVENT:", row)
         last_device_state = device_state
+
+        if pending is not None:
+            confirmed = now - py_last_fall <= CONFIRM_WINDOW
+            if confirmed or now - pending["since"] >= CONFIRM_WINDOW:
+                finalize_event(pending["row"], confirmed)
+                pending = None
 
 
 @app.route("/")
