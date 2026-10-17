@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fall-Detection Hub</title>
+<style>
+  :root {
+    --bg: #eef2f4;
+    --panel: #ffffff;
+    --ink: #17323a;
+    --muted: #5d7680;
+    --line: #d5dfe3;
+    --ok: #1f7a63;
+    --ok-bg: #dff1ea;
+    --alarm: #c8302b;
+    --alarm-bg: #fbe3e1;
+    --warn: #b7791f;
+    --trace: #1c5d7a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1c21; --panel: #172a31; --ink: #e4eef1; --muted: #8fa8b1;
+      --line: #284049; --ok: #5fd0ac; --ok-bg: #12382f;
+      --alarm: #ff7a73; --alarm-bg: #4a1f1d; --warn: #e3b25a; --trace: #6cc2e6;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.45;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  h1 { font-size: 1.15rem; margin: 0; font-weight: 650; }
+  #link { font-size: .85rem; color: var(--muted); }
+  #link b { color: var(--ink); font-weight: 600; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+  .dot.live { background: var(--ok); }
+  .dot.stale { background: var(--warn); }
+
+  #status {
+    border-radius: 14px; padding: 26px 28px; margin-bottom: 16px;
+    background: var(--ok-bg); border: 2px solid var(--ok);
+    display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  #status .label { font-size: .85rem; color: var(--muted); margin-bottom: 2px; }
+  #status .state { font-size: clamp(2rem, 6vw, 3.4rem); font-weight: 750; letter-spacing: -.01em; color: var(--ok); line-height: 1.05; }
+  #status .note { font-size: .95rem; color: var(--ink); max-width: 320px; }
+  #status.fall { background: var(--alarm-bg); border-color: var(--alarm); animation: pulse 1s ease-in-out infinite; }
+  #status.fall .state { color: var(--alarm); }
+  #status.offline { background: var(--panel); border-color: var(--line); }
+  #status.offline .state { color: var(--muted); }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 8px rgba(200,48,43,.18); } }
+  @media (prefers-reduced-motion: reduce) { #status.fall { animation: none; } }
+
+  .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  h2 { font-size: .95rem; margin: 0 0 10px; font-weight: 650; }
+  .sub { color: var(--muted); font-size: .8rem; font-weight: 400; margin-left: 6px; }
+
+  canvas { width: 100%; height: 190px; display: block; }
+  .readout { display: flex; gap: 22px; margin-top: 8px; font-size: .85rem; color: var(--muted); flex-wrap: wrap; }
+  .readout b { color: var(--ink); font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+
+  .sensor { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .sensor:last-child { border-bottom: 0; }
+  .sensor span:first-child { color: var(--muted); font-size: .9rem; }
+  .sensor b { font-variant-numeric: tabular-nums; }
+  .pill { padding: 2px 10px; border-radius: 999px; font-size: .8rem; font-weight: 600; background: var(--line); color: var(--muted); }
+  .pill.on { background: var(--ok-bg); color: var(--ok); }
+  .pill.bad { background: var(--alarm-bg); color: var(--alarm); }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; min-width: 480px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  th { color: var(--muted); font-weight: 600; font-size: .8rem; }
+  .empty { color: var(--muted); padding: 14px 0 4px; font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Fall-Detection Hub</h1>
+    <div id="link"><span class="dot" id="dot"></span><b id="linkText">Waiting for device</b> <span id="lastSeen"></span></div>
+  </header>
+
+  <div id="status" class="offline" role="status" aria-live="polite">
+    <div>
+      <div class="label">Current state</div>
+      <div class="state" id="state">No data yet</div>
+    </div>
+    <div class="note" id="note">Start the Wokwi simulation. Readings appear here within a second.</div>
+  </div>
+
+  <div class="grid">
+    <section>
+      <h2>Vibration <span class="sub">last 60 readings, dashed line is the fall threshold</span></h2>
+      <canvas id="chart" width="640" height="190" aria-label="Vibration chart"></canvas>
+      <div class="readout">
+        <div>Now <b id="vib">-</b></div>
+        <div>Peak <b id="peak">-</b></div>
+        <div>Threshold <b id="thr">3000</b></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Sensors</h2>
+      <div class="sensor"><span>Motion (PIR)</span><span class="pill" id="pir">-</span></div>
+      <div class="sensor"><span>Light level (LDR)</span><b id="ldr">-</b></div>
+      <div class="sensor"><span>Lamp</span><span class="pill" id="lamp">-</span></div>
+      <div class="sensor"><span>Python rule check</span><span class="pill" id="pycheck">-</span></div>
+      <div class="sensor"><span>Device</span><b id="device">-</b></div>
+    </section>
+  </div>
+
+  <section>
+    <h2>Fall events <span class="sub">newest first, also saved to events.csv</span></h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Device state</th><th>Python check</th><th>Vibration</th><th>Motion</th><th>Light</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="empty">No falls recorded yet. Hold the potentiometer above the threshold for about a second to trigger one.</div>
+  </section>
+</main>
+
+<script>
+(function () {
+  var THRESHOLD = 3000;
+  var POLL_MS = 500;
+  var STALE_MS = 3000;
+  var HISTORY = 60;
+  var PY_LATCH_MS = 5000;
+
+  var history = [];
+  var lastDeviceMs = null;
+  var lastChange = 0;
+  var pyLatchUntil = 0;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function esc(v) {
+    return String(v === undefined || v === null ? "" : v)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function setPill(el, text, cls) {
+    el.textContent = text;
+    el.className = "pill" + (cls ? " " + cls : "");
+  }
+
+  function draw() {
+    var c = $("chart"), ctx = c.getContext("2d");
+    var dpr = window.devicePixelRatio || 1;
+    var w = c.clientWidth, h = c.clientHeight;
+    if (c.width !== Math.round(w * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    var cs = getComputedStyle(document.documentElement);
+    var line = cs.getPropertyValue("--line").trim();
+    var trace = cs.getPropertyValue("--trace").trim();
+    var alarm = cs.getPropertyValue("--alarm").trim();
+    var muted = cs.getPropertyValue("--muted").trim();
+    var MAX = 4095, pad = 8;
+    function y(v) { return h - pad - (v / MAX) * (h - pad * 2); }
+
+    ctx.strokeStyle = line; ctx.lineWidth = 1;
+    for (var g = 0; g <= 4; g++) {
+      var gy = pad + g * (h - pad * 2) / 4;
+      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
+    }
+    ctx.setLineDash([6, 5]); ctx.strokeStyle = alarm; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(0, y(THRESHOLD)); ctx.lineTo(w, y(THRESHOLD)); ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (history.length < 2) {
+      ctx.fillStyle = muted; ctx.font = "13px sans-serif";
+      ctx.fillText("Waiting for readings...", 12, h / 2);
+      return;
+    }
+    var step = w / (HISTORY - 1);
+    var x0 = w - (history.length - 1) * step;
+    ctx.strokeStyle = trace; ctx.lineWidth = 2; ctx.lineJoin = "round";
+    ctx.beginPath();
+    history.forEach(function (v, i) {
+      var x = x0 + i * step;
+      if (i === 0) ctx.moveTo(x, y(v)); else ctx.lineTo(x, y(v));
+    });
+    ctx.stroke();
+    ctx.fillStyle = history[history.length - 1] >= THRESHOLD ? alarm : trace;
+    ctx.beginPath(); ctx.arc(w - 4, y(history[history.length - 1]), 4, 0, 6.283); ctx.fill();
+  }
+
+  function setStatus(mode, stateText, note) {
+    var s = $("status");
+    s.className = mode;
+    $("state").textContent = stateText;
+    $("note").textContent = note;
+  }
+
+  function render(payload) {
+    var d = payload.latest || {};
+    var now = Date.now();
+
+    if (d.ms === undefined) {
+      setStatus("offline", "No data yet", "Start the Wokwi simulation, then run app.py. Readings appear here within a second.");
+      $("dot").className = "dot"; $("linkText").textContent = "Waiting for device";
+      renderEvents(payload.events || []);
+      draw();
+      return;
+    }
+
+    if (d.ms !== lastDeviceMs) {
+      lastDeviceMs = d.ms; lastChange = now;
+      history.push(Number(d.vib) || 0);
+      if (history.length > HISTORY) history.shift();
+      if (d.python_check === "FALL") pyLatchUntil = now + PY_LATCH_MS;
+    }
+
+    var age = now - lastChange;
+    var stale = age > STALE_MS;
+    $("dot").className = "dot " + (stale ? "stale" : "live");
+    $("linkText").textContent = stale ? "Device silent" : "Device connected";
+    $("lastSeen").textContent = d.received ? "Last reading " + d.received : "";
+
+    if (stale) {
+      setStatus("offline", "Device offline", "No new readings for " + Math.round(age / 1000) + " seconds. Check that the Wokwi simulation is running.");
+    } else if (d.state === "FALL_DETECTED") {
+      setStatus("fall", "FALL DETECTED", "Buzzer is sounding. Alert clears automatically about 5 seconds after the fall.");
+    } else {
+      setStatus("", "Normal", "Vibration is below the threshold. The hub is watching.");
+    }
+
+    var vib = Number(d.vib) || 0;
+    $("vib").textContent = vib;
+    $("peak").textContent = history.length ? Math.max.apply(null, history) : "-";
+    setPill($("pir"), d.pir ? "Motion" : "Still", d.pir ? "on" : "");
+    $("ldr").textContent = d.ldr;
+    setPill($("lamp"), d.lamp ? "ON" : "OFF", d.lamp ? "on" : "");
+    var pyOk = now < pyLatchUntil;
+    var devFall = d.state === "FALL_DETECTED";
+    if (devFall && pyOk) setPill($("pycheck"), "Agrees: fall", "bad");
+    else if (devFall) setPill($("pycheck"), "Not confirmed", "");
+    else setPill($("pycheck"), "Normal", "on");
+    $("device").textContent = d.device || "-";
+
+    renderEvents(payload.events || []);
+    draw();
+  }
+
+  function renderEvents(list) {
+    $("empty").style.display = list.length ? "none" : "block";
+    $("rows").innerHTML = list.map(function (e) {
+      var t = String(e.received_at || "").replace("T", " ");
+      return "<tr><td>" + esc(t) + "</td><td>" + esc(e.device_state) + "</td><td>" +
+        esc(e.python_check) + "</td><td>" + esc(e.vib) + "</td><td>" +
+        (e.pir ? "Yes" : "No") + "</td><td>" + esc(e.ldr) + "</td></tr>";
+    }).join("");
+  }
+
+  function poll() {
+    fetch("/data", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(render)
+      .catch(function () {
+        setStatus("offline", "Server unreachable", "The dashboard cannot reach app.py. Make sure it is running and refresh this page.");
+        $("dot").className = "dot stale"; $("linkText").textContent = "No server";
+      });
+  }
+
+  window.addEventListener("resize", draw);
+  draw(); poll(); setInterval(poll, POLL_MS);
+})();
+</script>
+</body>
+</html>
