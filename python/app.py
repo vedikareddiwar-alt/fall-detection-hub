@@ -24,7 +24,8 @@ events = []
 last_device_state = "NORMAL"
 py_consecutive = 0
 py_first_time = 0.0
-py_last_fall = 0.0
+py_last_fall = None
+last_device_time = None
 pending = None
 
 app = Flask(__name__)
@@ -59,6 +60,14 @@ def on_connect(client, userdata, flags, rc):
     print("Subscribed to", TOPIC)
 
 
+def reset_python_state():
+    global py_consecutive, py_first_time, py_last_fall, pending
+    py_consecutive = 0
+    py_first_time = 0.0
+    py_last_fall = None
+    pending = None
+
+
 def finalize_event(row, py_confirmed):
     row["python_check"] = "FALL" if py_confirmed else "no"
     events.insert(0, row)
@@ -68,13 +77,22 @@ def finalize_event(row, py_confirmed):
 
 
 def on_message(client, userdata, msg):
-    global last_device_state, py_last_fall, pending
-    now = time.time()
+    global last_device_state, py_last_fall, last_device_time, pending
     try:
         data = json.loads(msg.payload.decode())
     except ValueError:
         print("Bad message:", msg.payload)
         return
+
+    # Time the rule on the device's own clock (the "ms" field), so it works
+    # even when the Wokwi simulator runs slower than real time.
+    try:
+        now = float(data["ms"]) / 1000.0
+    except (KeyError, TypeError, ValueError):
+        now = time.time()
+    if last_device_time is not None and now < last_device_time:
+        reset_python_state()  # simulator was restarted, its clock went back to 0
+    last_device_time = now
 
     vib = int(data.get("vib", 0))
     device_state = data.get("state", "NORMAL")
@@ -103,7 +121,7 @@ def on_message(client, userdata, msg):
         last_device_state = device_state
 
         if pending is not None:
-            confirmed = now - py_last_fall <= CONFIRM_WINDOW
+            confirmed = py_last_fall is not None and abs(now - py_last_fall) <= CONFIRM_WINDOW
             if confirmed or now - pending["since"] >= CONFIRM_WINDOW:
                 finalize_event(pending["row"], confirmed)
                 pending = None
